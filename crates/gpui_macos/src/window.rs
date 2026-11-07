@@ -782,6 +782,13 @@ unsafe fn pop_simple_fullscreen_presentation_options() {
     }
 }
 
+fn has_shown_subview(native_view: NonNull<Objc2Object>) -> bool {
+    // SAFETY: the window state owns its view for the window's life, and
+    // PlatformWindow::draw runs on the main thread.
+    let view = unsafe { native_view.cast::<Objc2NSView>().as_ref() };
+    view.subviews().iter().any(|v| !v.isHidden())
+}
+
 unsafe fn apply_simple_fullscreen_plan(
     native_window: ObjcId,
     native_view: ObjcId,
@@ -2150,12 +2157,23 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
+        // A native subview the application placed over the GPUI view (a web
+        // view, a player) moves in the main thread's Core Animation
+        // transaction. Presenting the frame in that same transaction keeps
+        // the two in step instead of one frame apart.
+        let in_step = has_shown_subview(this.native_view);
+        if in_step {
+            this.renderer.set_presents_with_transaction(true);
+        }
         #[cfg(feature = "wgpu")]
         if this.renderer.draw(scene) {
             this.force_render_pending = true;
         }
         #[cfg(not(feature = "wgpu"))]
         this.renderer.draw(scene);
+        if in_step {
+            this.renderer.set_presents_with_transaction(false);
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
