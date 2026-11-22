@@ -861,11 +861,16 @@ impl SwashGlyphRasterizer {
         let mut font_ref = SwashFontRef::from_index(face.data(), face.face_index as usize)
             .context("Swash could not parse the stored font face")?;
         font_ref.key = cache_key;
+        let glyph_id: u16 = params.glyph_id.0.try_into()?;
+        let mut size = f32::from(params.font_size) * params.scale_factor;
+        if params.raster_style.mode == GlyphRenderMode::Color {
+            size = snap_to_color_strike(font_ref, glyph_id, size);
+        }
         let subpixel_offset = subpixel_offset(params);
         let mut scaler = self
             .scale_context
             .builder(font_ref)
-            .size(f32::from(params.font_size) * params.scale_factor)
+            .size(size)
             .normalized_coords(
                 face.normalized_coords
                     .iter()
@@ -908,9 +913,19 @@ impl SwashGlyphRasterizer {
             )));
         }
 
-        let glyph_id: u16 = params.glyph_id.0.try_into()?;
         Ok(renderer.render(&mut scaler, glyph_id))
     }
+}
+
+/// The size of the colour strike that best fits `size`, when that strike is
+/// less than one device pixel larger: resampling a bitmap that close to 1:1
+/// blurs it by about a pixel, so it draws as stored instead.
+fn snap_to_color_strike(font: SwashFontRef<'_>, glyph_id: u16, size: f32) -> f32 {
+    font.color_strikes()
+        .find_by_nearest_ppem(size as u16, glyph_id)
+        .map(|strike| f32::from(strike.ppem()))
+        .filter(|ppem| (size..size + 1.0).contains(ppem))
+        .unwrap_or(size)
 }
 
 fn subpixel_offset(params: &RenderGlyphParams) -> Vector {
@@ -1029,6 +1044,39 @@ mod tests {
         };
         rasterizer.rasterize(native_face, &native_params).unwrap();
         assert_eq!(rasterizer.native.raster_calls, 1);
+    }
+
+    #[test]
+    fn color_bitmaps_draw_as_stored_within_a_device_pixel_below_their_strike() {
+        let source = Blob::from(NOTO_COLOR_EMOJI.data.to_vec());
+        let font = FontRef::new(source.as_ref()).unwrap();
+        let face = RasterFace {
+            font_id: FontId(1),
+            source_id: source.id(),
+            source: &source,
+            face_index: 0,
+            normalized_coords: &[],
+            variations: &[],
+            synthesis: FontSynthesis::default(),
+            has_color_glyphs: true,
+        };
+        let emoji = GlyphId(font.charmap().map('😀').unwrap().to_u32());
+        let mut rasterizer = SwashGlyphRasterizer::default();
+        let mut width = |device_size: f32| {
+            let params = RenderGlyphParams {
+                font_id: face.font_id,
+                glyph_id: emoji,
+                font_size: px(device_size / 2.0),
+                subpixel_variant: point(0, 0),
+                scale_factor: 2.0,
+                raster_style: PreparedRasterStyle::independent(GlyphRenderMode::Color),
+            };
+            rasterizer.rasterize(face, &params).unwrap().size.width
+        };
+
+        let stored = width(109.0);
+        assert_eq!(width(108.5), stored, "Noto's one strike is 109 ppem");
+        assert!(width(108.0) < stored, "a full pixel below still resamples");
     }
 
     fn steep_avar_font_data() -> Vec<u8> {
