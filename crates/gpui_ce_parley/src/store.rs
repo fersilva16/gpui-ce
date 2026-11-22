@@ -917,7 +917,7 @@ impl SwashGlyphRasterizer {
     }
 }
 
-/// The size of the colour strike that best fits `size`, when that strike is
+/// The size of the color strike that best fits `size`, when that strike is
 /// less than one device pixel larger: resampling a bitmap that close to 1:1
 /// blurs it by about a pixel, so it draws as stored instead.
 fn snap_to_color_strike(font: SwashFontRef<'_>, glyph_id: u16, size: f32) -> f32 {
