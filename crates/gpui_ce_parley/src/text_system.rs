@@ -987,15 +987,17 @@ impl ParleyLayout {
         }
     }
 
-    fn line_index_at_block(&self, block: f32) -> usize {
+    /// The line of a cursor whose box starts at `top`. Parley gives a cursor
+    /// its line's block box, and those boxes overlap when a line is shorter
+    /// than its glyphs or an inline box, so the first box holding `top` can
+    /// be the line above: the line is the one whose box starts nearest it.
+    fn line_index_of_cursor(&self, top: f32) -> usize {
         self.layout
             .lines()
-            .position(|line| {
-                let metrics = line.metrics();
-
-                block >= metrics.block_min_coord && block < metrics.block_max_coord
-            })
-            .unwrap_or_else(|| self.layout.len().saturating_sub(1))
+            .map(|line| (line.metrics().block_min_coord - top).abs())
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map_or(0, |(index, _)| index)
     }
 
     fn inline_cluster_geometry(&self) -> Vec<ParleyClusterGeometry> {
@@ -1135,7 +1137,7 @@ impl PlatformTextLayout for ParleyLayout {
 
         let cursor = self.cursor(caret);
         let geometry = cursor.geometry(&self.layout, 0.0);
-        let line_index = self.line_index_at_block(geometry.y0 as f32);
+        let line_index = self.line_index_of_cursor(geometry.y0 as f32);
 
         Some(Bounds::from_corners(
             point(px(geometry.x0 as f32), line_height * line_index),
@@ -1303,7 +1305,7 @@ impl PlatformTextLayout for ParleyLayout {
                 };
 
                 let geometry = cursor.geometry(&self.layout, 0.0);
-                let line_index = self.line_index_at_block(geometry.y0 as f32);
+                let line_index = self.line_index_of_cursor(geometry.y0 as f32);
                 let target_ix = line_index
                     .checked_add_signed(delta)
                     .filter(|&target_ix| self.layout.get(target_ix).is_some());
@@ -3239,6 +3241,74 @@ mod tests {
         assert!(batched[0].is_empty());
         assert!(batched[1].is_empty());
         assert_eq!(batched[2], native);
+    }
+
+    #[test]
+    fn a_caret_stays_on_its_line_when_line_boxes_overlap() {
+        let system = test_system();
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let runs = [text_run(text, IBM_PLEX.family)];
+        let tall = [InlineBoxRequest {
+            id: 1,
+            index: 0,
+            size: size(px(16.0), px(22.0)),
+            vertical_align: VerticalAlign::Middle,
+        }];
+        let text_metrics = InlineTextMetrics {
+            ascent: px(14.0),
+            descent: px(4.0),
+            x_height: px(8.0),
+        };
+
+        for (line_height, boxes) in [(px(18.0), &tall[..]), (px(12.0), &[][..])] {
+            let layout = system.layout_inline(InlineLayoutRequest {
+                text_styles: &[],
+                text,
+                runs: &runs,
+                boxes,
+                font_size: px(16.0),
+                line_height,
+                text_metrics,
+                options: TextLayoutOptions {
+                    wrap_width: Some(px(120.0)),
+                    text_align: TextAlign::Left,
+                    ..Default::default()
+                },
+                bidi_scopes: &[],
+            });
+            let native = &layout.layout.platform_layout;
+            assert!(native.line_count() >= 3, "{line_height:?}: the text wraps");
+
+            let mut lines = 0;
+            for (start, word) in text.split_word_bound_indices() {
+                if word == " " {
+                    continue;
+                }
+                let inside = CaretPosition::attached_to_next_cluster(start + 1);
+                let caret = native.caret_bounds(inside, line_height).unwrap();
+                let cluster = native.selection_bounds(start..start + 1, line_height)[0];
+                assert_eq!(
+                    caret.origin.y, cluster.origin.y,
+                    "{line_height:?}: the caret in {word:?} is on its line"
+                );
+                lines = lines.max((caret.origin.y / line_height) as usize);
+
+                let down = native.caret_movement(
+                    inside,
+                    Direction::Down.with_boundary(Boundary::VisualLine),
+                    None,
+                );
+                let below = native.caret_bounds(down.result, line_height).unwrap();
+                if caret.origin.y + line_height < line_height * native.line_count() {
+                    assert_eq!(
+                        below.origin.y,
+                        caret.origin.y + line_height,
+                        "{line_height:?}: down from {word:?} is one line down"
+                    );
+                }
+            }
+            assert_eq!(lines + 1, native.line_count(), "{line_height:?}");
+        }
     }
 
     #[test]
