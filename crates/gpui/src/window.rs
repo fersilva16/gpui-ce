@@ -910,28 +910,13 @@ impl HitboxId {
 }
 
 impl HitboxId {
-    /// Checks if the hitbox with this ID is currently hovered. Returns `false` during keyboard
-    /// input modality so that keyboard navigation suppresses hover highlights. Except when handling
+    /// Checks if the hitbox with this ID is currently hovered. A hover stays through keyboard
+    /// input, as CSS's `:hover` does: the pointer has not moved. Except when handling
     /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
     /// events or paint hover styles.
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
-        // If this hitbox has captured the pointer, it's always considered hovered
-        if window.captured_hitbox == Some(self) {
-            return true;
-        }
-        if window.last_input_was_keyboard() {
-            return false;
-        }
-        self.hit_test(window)
-    }
-
-    /// Checks if the hitbox with this ID is currently hovered, regardless of the last
-    /// input modality used.
-    ///
-    /// See [`HitboxId::is_hovered`] for more details.
-    pub(crate) fn is_hovered_ignoring_last_input(self, window: &Window) -> bool {
         // If this hitbox has captured the pointer, it's always considered hovered
         if window.captured_hitbox == Some(self) {
             return true;
@@ -985,15 +970,13 @@ impl Hitbox {
             )
     }
 
-    /// Checks if the hitbox is currently hovered. Returns `false` during keyboard input modality
-    /// so that keyboard navigation suppresses hover highlights. Except when handling
-    /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
-    /// events or paint hover styles.
+    /// Checks if the hitbox is currently hovered. A hover stays through keyboard input. Except
+    /// when handling `ScrollWheelEvent`, this is typically what you want when determining whether
+    /// to handle mouse events or paint hover styles.
     ///
     /// This can return `false` even when the hitbox contains the mouse, if a hitbox in front of
     /// this sets `HitboxBehavior::BlockMouse` (`InteractiveElement::occlude`) or
-    /// `HitboxBehavior::BlockMouseExceptScroll` (`InteractiveElement::block_mouse_except_scroll`),
-    /// or if the current input modality is keyboard (see [`Window::last_input_was_keyboard`]).
+    /// `HitboxBehavior::BlockMouseExceptScroll` (`InteractiveElement::block_mouse_except_scroll`).
     ///
     /// Handling of `ScrollWheelEvent` should typically use `should_handle_scroll` instead.
     /// Concretely, this is due to use-cases like overlays that cause the elements under to be
@@ -1250,9 +1233,7 @@ impl Frame {
                     .iter()
                     .rev()
                     .find_map(|request| match request {
-                        CursorStyleRequest::Hitbox { id, style }
-                            if id.is_hovered_ignoring_last_input(window) =>
-                        {
+                        CursorStyleRequest::Hitbox { id, style } if id.is_hovered(window) => {
                             style.resolve(window.mouse_position())
                         }
                         _ => None,
@@ -5872,9 +5853,8 @@ impl Window {
         #[cfg(feature = "profiler")]
         self.window_profiler.begin_input(event.kind_name());
         let update_count_before = self.invalidator.update_count();
-        // Track input modality for focus-visible styling and hover suppression.
-        // Hover is suppressed during keyboard modality so that keyboard navigation
-        // doesn't show hover highlights on the item under the mouse cursor.
+        // Track input modality for focus-visible styling, and for hover
+        // suppression during touch input.
         let old_modality = self.last_input_modality;
         self.last_input_modality = match &event {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,

@@ -1672,7 +1672,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn hover_transitions_follow_input_modality_across_focus_changes(cx: &mut TestAppContext) {
+    fn hover_transitions_follow_focus_changes_and_stay_through_keyboard_input(
+        cx: &mut TestAppContext,
+    ) {
         let target_focus = cx.update(|cx| cx.focus_handle().tab_stop(true));
         let next_focus = cx.update(|cx| cx.focus_handle().tab_stop(true));
         let presented_width = Rc::new(Cell::new(px(0.0)));
@@ -1740,9 +1742,10 @@ mod tests {
                 .expect("transition test window should remain open")
         );
 
+        // Tab moves focus but not the pointer: the hover stays, unfocused.
         cx.executor().advance_clock(Duration::from_millis(120));
         assert!(simulate_next_frame(cx) > 0);
-        assert_width_near(100.0);
+        assert_width_near(150.0);
         assert_eq!(
             simulate_next_frame(cx),
             0,
