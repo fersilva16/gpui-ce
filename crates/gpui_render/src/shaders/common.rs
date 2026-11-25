@@ -304,6 +304,19 @@ mod source {
         (tile_origin + unit_position * tile_size) / texture_size
     }
 
+    /// `position` kept at least half a texel inside `tile`, so a linear sample of a sprite
+    /// drawn larger or smaller than its tile reads none of its neighbors in the atlas. At its
+    /// own size a sprite samples texel centers inside that range, so it reads the same.
+    pub fn clamp_to_tile(position: Vec2f, tile: AtlasTile, atlas_size: Vec2u) -> Vec2f {
+        let tile_origin = vec2f(tile.bounds.origin.x as f32, tile.bounds.origin.y as f32);
+        let tile_size = vec2f(tile.bounds.size.x as f32, tile.bounds.size.y as f32);
+        let texture_size = vec2f(atlas_size.x as f32, atlas_size.y as f32);
+        let half_texel = vec2f(0.5, 0.5);
+        let low = (tile_origin + half_texel) / texture_size;
+        let high = (tile_origin + tile_size - half_texel) / texture_size;
+        min(max(position, low), high)
+    }
+
     pub fn color_brightness(color: Vec3f) -> f32 {
         dot(color, REC_601_LUMA_WEIGHTS)
     }
