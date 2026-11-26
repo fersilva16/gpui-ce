@@ -2,15 +2,15 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
-    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global, GlobalElementId,
-    GlyphId, GlyphRenderMode, GpuSpecs, InputHandler, IntoElement, IsZero, KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, Modifiers,
-    ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton, MouseEvent, MouseMoveEvent,
-    MouseUpEvent, PaintSurface, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
-    PromptLevel, Quad, RasterizedGlyphFormat, Render, RenderGlyphParams, RenderImage,
-    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, ResolvedDirection,
+    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
+    ElementTransform, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary,
+    FontId, Global, GlobalElementId, GlyphId, GlyphRenderMode, GpuSpecs, InputHandler, IntoElement,
+    IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
+    Lerp, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
+    MouseEvent, MouseMoveEvent, MouseUpEvent, PaintSurface, Path, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    Priority, PromptButton, PromptLevel, Quad, RasterizedGlyphFormat, Render, RenderGlyphParams,
+    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, ResolvedDirection,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels,
     Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet,
     Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
@@ -910,28 +910,13 @@ impl HitboxId {
 }
 
 impl HitboxId {
-    /// Checks if the hitbox with this ID is currently hovered. Returns `false` during keyboard
-    /// input modality so that keyboard navigation suppresses hover highlights. Except when handling
+    /// Checks if the hitbox with this ID is currently hovered. A hover stays through keyboard
+    /// input, as CSS's `:hover` does: the pointer has not moved. Except when handling
     /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
     /// events or paint hover styles.
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
-        // If this hitbox has captured the pointer, it's always considered hovered
-        if window.captured_hitbox == Some(self) {
-            return true;
-        }
-        if window.last_input_was_keyboard() {
-            return false;
-        }
-        self.hit_test(window)
-    }
-
-    /// Checks if the hitbox with this ID is currently hovered, regardless of the last
-    /// input modality used.
-    ///
-    /// See [`HitboxId::is_hovered`] for more details.
-    pub(crate) fn is_hovered_ignoring_last_input(self, window: &Window) -> bool {
         // If this hitbox has captured the pointer, it's always considered hovered
         if window.captured_hitbox == Some(self) {
             return true;
@@ -962,10 +947,11 @@ impl HitboxId {
 pub struct Hitbox {
     /// A unique identifier for the hitbox.
     pub id: HitboxId,
-    /// The bounds of the hitbox.
+    /// The bounds of the hitbox, where it is drawn: under an element transform, where the
+    /// transform puts them.
     #[deref]
     pub bounds: Bounds<Pixels>,
-    /// The content mask when the hitbox was inserted.
+    /// The content mask when the hitbox was inserted, where it is drawn.
     pub content_mask: ContentMask<Pixels>,
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
@@ -985,15 +971,13 @@ impl Hitbox {
             )
     }
 
-    /// Checks if the hitbox is currently hovered. Returns `false` during keyboard input modality
-    /// so that keyboard navigation suppresses hover highlights. Except when handling
-    /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
-    /// events or paint hover styles.
+    /// Checks if the hitbox is currently hovered. A hover stays through keyboard input. Except
+    /// when handling `ScrollWheelEvent`, this is typically what you want when determining whether
+    /// to handle mouse events or paint hover styles.
     ///
     /// This can return `false` even when the hitbox contains the mouse, if a hitbox in front of
     /// this sets `HitboxBehavior::BlockMouse` (`InteractiveElement::occlude`) or
-    /// `HitboxBehavior::BlockMouseExceptScroll` (`InteractiveElement::block_mouse_except_scroll`),
-    /// or if the current input modality is keyboard (see [`Window::last_input_was_keyboard`]).
+    /// `HitboxBehavior::BlockMouseExceptScroll` (`InteractiveElement::block_mouse_except_scroll`).
     ///
     /// Handling of `ScrollWheelEvent` should typically use `should_handle_scroll` instead.
     /// Concretely, this is due to use-cases like overlays that cause the elements under to be
@@ -1125,6 +1109,7 @@ pub(crate) struct DeferredDraw {
     rem_size: Pixels,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
+    element_transform: ElementTransform,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
 }
@@ -1250,9 +1235,7 @@ impl Frame {
                     .iter()
                     .rev()
                     .find_map(|request| match request {
-                        CursorStyleRequest::Hitbox { id, style }
-                            if id.is_hovered_ignoring_last_input(window) =>
-                        {
+                        CursorStyleRequest::Hitbox { id, style } if id.is_hovered(window) => {
                             style.resolve(window.mouse_position())
                         }
                         _ => None,
@@ -1322,7 +1305,11 @@ pub struct Window {
     /// Bounds of the parent `Div` currently prepainting this element as one of its children.
     /// Inset transitions use these bounds to resolve `auto` from the child's rendered position.
     style_transition_containing_bounds: Option<Bounds<Pixels>>,
+    /// Each mask where it is drawn: one pushed under an element transform is stored where
+    /// that transform puts it.
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
+    /// What draws now goes through: every element transform around it, composed.
+    element_transform: ElementTransform,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     /// The [`TextInputConfiguration`] most recently forwarded to the platform
     /// window, so that only actual changes are forwarded (reconfiguring a live
@@ -2078,6 +2065,7 @@ impl Window {
             element_offset_stack: Vec::new(),
             style_transition_containing_bounds: None,
             content_mask_stack: Vec::new(),
+            element_transform: ElementTransform::IDENTITY,
             requested_autoscroll: None,
             last_text_input_configuration: None,
             focused_text_input_active: false,
@@ -3078,8 +3066,16 @@ impl Window {
         position.map(|c| self.pixel_snap(c))
     }
 
+    /// Snaps bounds in the current element's layout to device pixels, where its element
+    /// transform draws them.
     #[inline]
     fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
+        self.snap_drawn_bounds(self.element_transform.apply_bounds(bounds))
+    }
+
+    /// Snaps bounds already where they are drawn to device pixels.
+    #[inline]
+    fn snap_drawn_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
         let scale_factor = self.scale_factor();
         let left = round_to_device_pixel(bounds.left().0, scale_factor);
         let top = round_to_device_pixel(bounds.top().0, scale_factor);
@@ -3094,7 +3090,10 @@ impl Window {
     /// Rounds half-to-zero but clamps any non-zero input up to 1 dp so thin strokes do not disappear.
     #[inline]
     fn snap_stroke(&self, value: Pixels) -> ScaledPixels {
-        ScaledPixels(round_stroke_to_device_pixel(value.0, self.scale_factor()))
+        ScaledPixels(round_stroke_to_device_pixel(
+            value.0 * self.element_transform.scale,
+            self.scale_factor(),
+        ))
     }
 
     #[inline]
@@ -3118,7 +3117,7 @@ impl Window {
 
     #[inline]
     fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
-        let mask = self.content_mask();
+        let mask = self.drawn_content_mask();
         ContentMask {
             bounds: self.cover_bounds(mask.bounds),
             fade_out: mask.fade_out.scale(self.scale_factor()),
@@ -3683,6 +3682,7 @@ impl Window {
                     current_view,
                     rem_size,
                     absolute_offset,
+                    element_transform,
                     prepaint_range,
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
@@ -3697,6 +3697,7 @@ impl Window {
                         deferred_draw.current_view,
                         deferred_draw.rem_size,
                         deferred_draw.absolute_offset,
+                        deferred_draw.element_transform,
                         deferred_draw.prepaint_range.clone(),
                     )
                 };
@@ -3707,9 +3708,14 @@ impl Window {
                     self.with_rendered_view(current_view, |window| {
                         window.with_rem_size(Some(rem_size), |window| {
                             window.with_absolute_element_offset(absolute_offset, |window| {
-                                crate::DeferredPriorityStackCache::push(priority, cx);
-                                element.prepaint(window, cx);
-                                crate::DeferredPriorityStackCache::pop(cx);
+                                window.with_absolute_element_transform(
+                                    element_transform,
+                                    |window| {
+                                        crate::DeferredPriorityStackCache::push(priority, cx);
+                                        element.prepaint(window, cx);
+                                        crate::DeferredPriorityStackCache::pop(cx);
+                                    },
+                                );
                             });
                         });
                     });
@@ -3754,12 +3760,15 @@ impl Window {
 
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
+            let element_transform = deferred_draw.element_transform;
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_content_mask(content_mask, |window| {
-                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                            element.paint(window, cx);
-                        });
+                    window.with_absolute_element_transform(element_transform, |window| {
+                        window.with_content_mask(content_mask, |window| {
+                            window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                                element.paint(window, cx);
+                            });
+                        })
                     })
                 })
             } else {
@@ -3835,6 +3844,7 @@ impl Window {
                     priority: deferred_draw.priority,
                     element: None,
                     absolute_offset: deferred_draw.absolute_offset,
+                    element_transform: deferred_draw.element_transform,
                     prepaint_range: deferred_draw.prepaint_range.clone(),
                     paint_range: deferred_draw.paint_range.clone(),
                 }),
@@ -3992,7 +4002,10 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
-            let mask = mask.intersect(&self.content_mask());
+            let mask = self
+                .element_transform
+                .apply_mask(mask)
+                .intersect(&self.drawn_content_mask());
             self.content_mask_stack.push(mask);
             let result = f(self);
             self.content_mask_stack.pop();
@@ -4000,6 +4013,49 @@ impl Window {
         } else {
             f(self)
         }
+    }
+
+    /// Draws what `f` draws through `transform`, a scale and a move in the coordinates the
+    /// current element lays out in, on top of the element transforms already around it. Layout
+    /// is untouched: quads, borders, text, images, SVGs, paths, shadows and filters draw where
+    /// `transform` puts them, content masks pushed inside move with them, and hitboxes inserted
+    /// inside stand where they are drawn, so the pointer finds them there. Mouse listeners still
+    /// read the pointer in window coordinates.
+    ///
+    /// Call it around both the prepaint and the paint of what it moves. Glyphs, SVGs and images
+    /// keep the raster of their untransformed size and stretch to the transformed one, so a scale
+    /// that changes every frame does not fill the sprite atlas.
+    pub fn with_element_transform<R>(
+        &mut self,
+        transform: ElementTransform,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        debug_assert!(
+            transform.scale > 0.,
+            "an element transform scales by a positive factor"
+        );
+        if transform.is_identity() {
+            return f(self);
+        }
+        self.with_absolute_element_transform(transform.then(self.element_transform), f)
+    }
+
+    /// The transform what draws now goes through: every
+    /// [`with_element_transform`](Self::with_element_transform) around it, composed.
+    pub fn element_transform(&self) -> ElementTransform {
+        self.element_transform
+    }
+
+    fn with_absolute_element_transform<R>(
+        &mut self,
+        transform: ElementTransform,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = mem::replace(&mut self.element_transform, transform);
+        let result = f(self);
+        self.element_transform = outer;
+        result
     }
 
     /// Updates the global element offset relative to the current offset. This is used to implement
@@ -4189,7 +4245,18 @@ impl Window {
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
+    /// It is in the current element's layout coordinates, under any element transform.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
+        let drawn = self.drawn_content_mask();
+        if self.element_transform.is_identity() {
+            drawn
+        } else {
+            self.element_transform.inverse().apply_mask(drawn)
+        }
+    }
+
+    /// The current content mask where it is drawn, in the window's own coordinates.
+    fn drawn_content_mask(&self) -> ContentMask<Pixels> {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.content_mask_stack
             .last()
@@ -4455,6 +4522,7 @@ impl Window {
             priority,
             element: Some(element),
             absolute_offset,
+            element_transform: self.element_transform,
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
         });
@@ -4468,8 +4536,10 @@ impl Window {
     pub fn paint_layer<R>(&mut self, bounds: Bounds<Pixels>, f: impl FnOnce(&mut Self) -> R) -> R {
         self.invalidator.debug_assert_paint();
 
-        let content_mask = self.content_mask();
-        let clipped_bounds = bounds.intersect(&content_mask.bounds);
+        let clipped_bounds = self
+            .element_transform
+            .apply_bounds(bounds)
+            .intersect(&self.drawn_content_mask().bounds);
         if !clipped_bounds.is_empty() {
             self.next_frame
                 .scene
@@ -4525,9 +4595,10 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
-        let scale_factor = self.scale_factor();
+        let transform = self.element_transform;
+        let scale_factor = self.scale_factor() * transform.scale;
         let content_mask = self.snapped_content_mask();
-        let element_bounds = self.cover_bounds(bounds);
+        let element_bounds = self.cover_bounds(transform.apply_bounds(bounds));
         let element_corner_radii = corner_radii.scale(scale_factor);
         let corner_smoothing = corner_smoothing.clamp(0.0, 1.0);
 
@@ -4550,7 +4621,7 @@ impl Window {
             self.next_frame.scene.insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor),
-                bounds: self.cover_bounds(shadow_bounds),
+                bounds: self.cover_bounds(transform.apply_bounds(shadow_bounds)),
                 content_mask,
                 corner_radii: shadow_radii.scale(scale_factor),
                 color: shadow.color,
@@ -4581,7 +4652,7 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
-        let scale_factor = self.scale_factor();
+        let scale_factor = self.scale_factor() * self.element_transform.scale;
         let filters: SmallVec<[ScaledFilter; 4]> = filters
             .iter()
             .filter(|filter| !filter.is_identity())
@@ -4622,7 +4693,7 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint();
 
-        let scale_factor = self.scale_factor();
+        let scale_factor = self.scale_factor() * self.element_transform.scale;
         let filters: SmallVec<[ScaledFilter; 4]> = filters
             .iter()
             .filter(|filter| !filter.is_identity())
@@ -4707,7 +4778,9 @@ impl Window {
             content_mask: self.snapped_content_mask(),
             background: quad.background,
             border_color: quad.border_color,
-            corner_radii: quad.corner_radii.scale(self.scale_factor()),
+            corner_radii: quad
+                .corner_radii
+                .scale(self.scale_factor() * self.element_transform.scale),
             border_widths: snapped_border_widths,
             border_style: quad.border_style,
             border_dashed_length: quad.border_dashed_length,
@@ -4771,14 +4844,13 @@ impl Window {
     /// Paint the given `Path` into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
-    pub fn paint_path(&mut self, mut path: Path<Pixels>, color: impl Into<Background>) {
+    pub fn paint_path(&mut self, path: Path<Pixels>, color: impl Into<Background>) {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
-        path.content_mask = content_mask;
-        let color: Background = color.into();
-        path.color = color;
+        let mut path = path.transformed(self.element_transform);
+        path.content_mask = self.drawn_content_mask();
+        path.color = color.into();
         self.next_frame
             .scene
             .insert_primitive(path.scale(scale_factor));
@@ -4796,6 +4868,7 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
+        let origin = self.element_transform.apply(origin);
         let thickness = self.snap_stroke(style.thickness);
         let height = if style.wavy {
             ScaledPixels(thickness.0 * 3.)
@@ -4830,6 +4903,7 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
+        let origin = self.element_transform.apply(origin);
         let height = style.thickness;
         let bounds = Bounds {
             origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
@@ -4866,7 +4940,7 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let glyph_origin = origin.scale(scale_factor);
+        let glyph_origin = self.element_transform.apply(origin).scale(scale_factor);
 
         let (integer_origin, subpixel_variant) = quantize_glyph_origin(glyph_origin);
         let requested_mode = if self.should_use_subpixel_rendering(font_id, font_size) {
@@ -4904,9 +4978,11 @@ impl Window {
         };
 
         debug_assert_eq!(entry.bounds.size, tile.bounds.size.map(Into::into));
+        let scale = self.element_transform.scale;
+        let stretched = |c: DevicePixels| ScaledPixels::from(c) * scale;
         let bounds = Bounds {
-            origin: integer_origin + entry.bounds.origin.map(Into::into),
-            size: tile.bounds.size.map(Into::into),
+            origin: integer_origin + entry.bounds.origin.map(stretched),
+            size: tile.bounds.size.map(stretched),
         };
         let content_mask = self.snapped_content_mask();
 
@@ -5006,7 +5082,7 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let glyph_origin = origin.scale(scale_factor);
+        let glyph_origin = self.element_transform.apply(origin).scale(scale_factor);
         let (integer_origin, subpixel_variant) = quantize_color_glyph_origin(glyph_origin);
         let raster_style = self.text_system().prepare_raster_style(
             font_id,
@@ -5040,7 +5116,9 @@ impl Window {
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
-        let bounds = self.snap_bounds(bounds);
+        let transform = self.element_transform;
+        let drawn = self.snap_bounds(bounds);
+        let bounds = self.snap_drawn_bounds(bounds);
 
         let params = RenderSvgParams {
             path,
@@ -5062,16 +5140,17 @@ impl Window {
             return Ok(());
         };
         let content_mask = self.snapped_content_mask();
+        let size = tile
+            .bounds
+            .size
+            .map(|value| ScaledPixels(value.0 as f32 / SMOOTH_SVG_SCALE_FACTOR * transform.scale));
         let svg_bounds = Bounds {
-            origin: bounds.center()
+            origin: drawn.center()
                 - Point::new(
-                    ScaledPixels(tile.bounds.size.width.0 as f32 / SMOOTH_SVG_SCALE_FACTOR / 2.),
-                    ScaledPixels(tile.bounds.size.height.0 as f32 / SMOOTH_SVG_SCALE_FACTOR / 2.),
+                    ScaledPixels(size.width.0 / 2.),
+                    ScaledPixels(size.height.0 / 2.),
                 ),
-            size: tile
-                .bounds
-                .size
-                .map(|value| ScaledPixels(value.0 as f32 / SMOOTH_SVG_SCALE_FACTOR)),
+            size,
         };
         let final_bounds = svg_bounds
             .map_origin(|value| ScaledPixels(round_half_toward_zero(value.0)))
@@ -5084,7 +5163,7 @@ impl Window {
             content_mask,
             color: color.into(),
             tile,
-            transformation,
+            transformation: transform.conjugate(transformation, self.scale_factor()),
         });
 
         Ok(())
@@ -5182,7 +5261,7 @@ impl Window {
         let content_mask = self.snapped_content_mask();
         let corner_radii = corner_radii
             .clamp_radii_for_quad_size(visible_bounds.size)
-            .scale(self.scale_factor());
+            .scale(self.scale_factor() * self.element_transform.scale);
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
@@ -5545,15 +5624,26 @@ impl Window {
     ) -> &mut Hitbox {
         self.invalidator.debug_assert_prepaint();
 
-        let content_mask = self.content_mask();
+        let transform = self.element_transform;
+        let content_mask = self.drawn_content_mask();
         let hitbox_id = self.next_hitbox_id;
         self.next_hitbox_id = self.next_hitbox_id.next();
+        let fragments = self.current_inline_fragments.as_ref().map(|fragments| {
+            if transform.is_identity() {
+                fragments.clone()
+            } else {
+                fragments
+                    .iter()
+                    .map(|fragment| transform.apply_bounds(*fragment))
+                    .collect()
+            }
+        });
         let hitbox = Hitbox {
             id: hitbox_id,
-            bounds,
+            bounds: transform.apply_bounds(bounds),
             content_mask,
             behavior,
-            fragments: self.current_inline_fragments.clone(),
+            fragments,
             tags: Vec::default(),
         };
 
@@ -5872,9 +5962,8 @@ impl Window {
         #[cfg(feature = "profiler")]
         self.window_profiler.begin_input(event.kind_name());
         let update_count_before = self.invalidator.update_count();
-        // Track input modality for focus-visible styling and hover suppression.
-        // Hover is suppressed during keyboard modality so that keyboard navigation
-        // doesn't show hover highlights on the item under the mouse cursor.
+        // Track input modality for focus-visible styling, and for hover
+        // suppression during touch input.
         let old_modality = self.last_input_modality;
         self.last_input_modality = match &event {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,
@@ -8472,6 +8561,163 @@ mod tests {
                         .inset(),
                 ])
         }
+    }
+
+    /// Its child, drawn through `transform`.
+    struct Transformed {
+        transform: ElementTransform,
+        child: AnyElement,
+    }
+
+    impl IntoElement for Transformed {
+        type Element = Self;
+
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+
+    impl crate::Element for Transformed {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+
+        fn request_layout(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
+            (self.child.request_layout(window, cx), ())
+        }
+
+        fn prepaint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            _: Bounds<Pixels>,
+            (): &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            window.with_element_transform(self.transform, |window| {
+                self.child.prepaint(window, cx);
+            });
+        }
+
+        fn paint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            _: Bounds<Pixels>,
+            (): &mut (),
+            (): &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            window.with_element_transform(self.transform, |window| {
+                self.child.paint(window, cx);
+            });
+        }
+    }
+
+    /// A 40 px card that clips, drawn at half its size about its center and 10 px to the
+    /// right, with a 10 px square deferred over its top left corner.
+    struct TransformedCardView {
+        mask: Rc<Cell<Option<ContentMask<Pixels>>>>,
+    }
+
+    fn card_transform() -> ElementTransform {
+        ElementTransform::scale_about(0.5, point(px(20.), px(20.)))
+            .then(ElementTransform::translate(point(px(10.), px(0.))))
+    }
+
+    impl Render for TransformedCardView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let mask = self.mask.clone();
+            Transformed {
+                transform: card_transform(),
+                child: div()
+                    .size(px(40.))
+                    .overflow_hidden()
+                    .bg(crate::blue())
+                    .occlude()
+                    .child(
+                        crate::canvas(
+                            |_, _, _| {},
+                            move |_, (), window, _| mask.set(Some(window.content_mask())),
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(crate::deferred(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size(px(10.))
+                            .bg(crate::red()),
+                    ))
+                    .into_any_element(),
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn an_element_transform_moves_what_draws_and_where_the_pointer_finds_it(
+        cx: &mut TestAppContext,
+    ) {
+        let mask = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let mask = mask.clone();
+            move |_, _| TransformedCardView { mask }
+        });
+
+        window
+            .update(cx, |_, window, _| {
+                let scale_factor = window.scale_factor();
+                let drawn = |x: f32, y: f32, side: f32| {
+                    Bounds::new(point(px(x), px(y)), size(px(side), px(side))).scale(scale_factor)
+                };
+                let quads = &window.rendered_frame.scene.quads;
+                let quad_of = |color: Hsla| {
+                    quads
+                        .iter()
+                        .find(|quad| quad.background.as_solid() == Some(color))
+                        .map(|quad| quad.bounds)
+                };
+                assert_eq!(quad_of(crate::blue()), Some(drawn(20., 10., 20.)));
+                assert_eq!(
+                    quad_of(crate::red()),
+                    Some(drawn(20., 10., 5.)),
+                    "a deferred draw keeps the transform it was deferred under"
+                );
+
+                assert_eq!(
+                    mask.get().map(|mask| mask.bounds),
+                    Some(Bounds::new(Point::default(), size(px(40.), px(40.)))),
+                    "an element reads its content mask in its own layout"
+                );
+
+                let hovered = |x: f32, y: f32| {
+                    window
+                        .rendered_frame
+                        .hit_test(point(px(x), px(y)))
+                        .iter_hovered()
+                        .count()
+                };
+                assert!(hovered(35., 25.) > 0, "the card is hit where it is drawn");
+                assert_eq!(hovered(5., 5.), 0, "and not where it is laid out");
+            })
+            .unwrap();
     }
 
     struct CornerSmoothingSceneView {

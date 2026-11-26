@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Pixels, Point,
-    Radians, ScaledFilter, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, ElementTransform,
+    Pixels, Point, Radians, ScaledFilter, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use smallvec::SmallVec;
 use std::{
@@ -1178,6 +1178,20 @@ impl Path<Pixels> {
             contour_count: self.contour_count,
             color: self.color,
         }
+    }
+
+    /// This path where `transform` draws it.
+    pub(crate) fn transformed(mut self, transform: ElementTransform) -> Self {
+        if transform.is_identity() {
+            return self;
+        }
+        self.bounds = transform.apply_bounds(self.bounds);
+        for vertex in &mut self.vertices {
+            vertex.xy_position = transform.apply(vertex.xy_position);
+        }
+        self.start = transform.apply(self.start);
+        self.current = transform.apply(self.current);
+        self
     }
 
     /// Move the start, current point to the given point.

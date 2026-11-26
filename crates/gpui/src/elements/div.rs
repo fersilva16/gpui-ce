@@ -4501,11 +4501,11 @@ pub struct ElementHoverState {
 
 impl ElementHoverState {
     fn group_is_active(&self, window: &Window) -> bool {
-        self.group && !window.last_input_was_keyboard() && !window.last_input_was_touch()
+        self.group && !window.last_input_was_touch()
     }
 
     fn element_is_active(&self, window: &Window) -> bool {
-        self.element && !window.last_input_was_keyboard() && !window.last_input_was_touch()
+        self.element && !window.last_input_was_touch()
     }
 }
 
@@ -5576,6 +5576,42 @@ mod tests {
         cx.update_window(any_window, |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         assert_eq!(*hover_transitions.borrow(), [true, false]);
+    }
+
+    #[gpui::test]
+    fn a_hover_stays_through_keyboard_input(cx: &mut TestAppContext) {
+        struct Probe(Rc<Cell<Option<HitboxId>>>);
+
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let hitbox = self.0.clone();
+                canvas(
+                    move |bounds, window, _| {
+                        hitbox.set(Some(
+                            window.insert_hitbox(bounds, HitboxBehavior::Normal).id,
+                        ));
+                    },
+                    |_, _, _, _| {},
+                )
+                .size_full()
+            }
+        }
+
+        let hitbox = Rc::new(Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let hitbox = hitbox.clone();
+            move |_, _| Probe(hitbox)
+        });
+        cx.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        cx.simulate_keystrokes("a");
+        cx.update(|window, _| {
+            assert!(window.last_input_was_keyboard());
+            let id = hitbox.get().expect("the canvas inserted its hitbox");
+            assert!(
+                id.is_hovered(window),
+                "a key press leaves the pointer where it was"
+            );
+        });
     }
 
     #[gpui::test]

@@ -71,3 +71,8 @@ console_error_panic_hook.workspace = true
 name = "parley_render"
 path = "tests/parley_render.rs"
 harness = false
+
+[[test]]
+name = "transform_render"
+path = "tests/transform_render.rs"
+harness = false

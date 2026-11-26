@@ -20,6 +20,7 @@ pub mod colors;
 #[cfg(feature = "profiler")]
 mod debug_overlay;
 mod element;
+mod element_transform;
 mod elements;
 mod executor;
 mod platform_scheduler;
@@ -107,6 +108,7 @@ pub use ctor::ctor;
 #[cfg(feature = "profiler")]
 pub use debug_overlay::*;
 pub use element::*;
+pub use element_transform::*;
 pub use elements::*;
 pub use executor::*;
 pub use geometry::*;

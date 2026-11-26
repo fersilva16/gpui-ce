@@ -4,7 +4,7 @@ use crate::{
     Pixels, PrepaintStateIndex, Render, RenderOnce, ResolvedDirection, Style, StyleRefinement,
     TextStyle, UnicodeBidi, WeakEntity,
 };
-use crate::{Empty, Window};
+use crate::{ElementTransform, Empty, Window};
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
@@ -362,6 +362,7 @@ struct ViewDirectionState {
 struct ViewElementCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
+    element_transform: ElementTransform,
     text_style: TextStyle,
     direction: ResolvedDirection,
     unicode_bidi: UnicodeBidi,
@@ -487,6 +488,7 @@ impl<V: View> Element for ViewElement<V> {
                         let cache_key = ViewElementCacheKey {
                             bounds,
                             content_mask: window.content_mask(),
+                            element_transform: window.element_transform(),
                             text_style: window.text_style(),
                             direction: window.resolved_direction(),
                             unicode_bidi: window.resolved_unicode_bidi(),

@@ -141,13 +141,13 @@ pub mod monochrome_sprite {
             return transparent();
         }
         let sprite = get!(MONOCHROME_SPRITES)[input.sprite_id as usize];
-        let sample = texture_sample_level(
-            MONOCHROME_TEXTURE,
-            MONOCHROME_SAMPLER,
+        let tile_position = clamp_to_tile(
             input.tile_position,
-            0.0,
-        )
-        .x;
+            sprite.tile,
+            texture_dimensions(MONOCHROME_TEXTURE),
+        );
+        let sample =
+            texture_sample_level(MONOCHROME_TEXTURE, MONOCHROME_SAMPLER, tile_position, 0.0).x;
         let corrected = apply_contrast_and_gamma_correction(
             sample,
             input.color.rgb(),
@@ -209,6 +209,11 @@ pub mod polychrome_sprite {
     }
 
     pub fn polychrome_color(sprite: PolychromeSprite, tile_position: Vec2f) -> Vec4f {
+        let tile_position = clamp_to_tile(
+            tile_position,
+            sprite.tile,
+            texture_dimensions(POLYCHROME_TEXTURE),
+        );
         let sample =
             texture_sample_level(POLYCHROME_TEXTURE, POLYCHROME_SAMPLER, tile_position, 0.0);
         let grayscale = dot(sample.rgb(), LINEAR_RGB_LUMA_WEIGHTS);
@@ -418,8 +423,13 @@ pub mod subpixel_sprite {
             };
         }
         let sprite = get!(SUBPIXEL_SPRITES)[input.sprite_id as usize];
+        let tile_position = clamp_to_tile(
+            input.tile_position,
+            sprite.tile,
+            texture_dimensions(SPRITE_TEXTURE),
+        );
         let sampled =
-            texture_sample_level(SPRITE_TEXTURE, SPRITE_SAMPLER, input.tile_position, 0.0).rgb();
+            texture_sample_level(SPRITE_TEXTURE, SPRITE_SAMPLER, tile_position, 0.0).rgb();
         let sample = select(
             sampled,
             sampled.bgr(),
