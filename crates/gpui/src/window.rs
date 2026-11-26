@@ -3799,6 +3799,26 @@ impl Window {
         }
     }
 
+    /// Where the next element state read in this frame is recorded.
+    pub(crate) fn element_states_index(&self) -> usize {
+        self.next_frame.accessed_element_states.len()
+    }
+
+    /// Keeps the element states the rendered frame read in `range` for the
+    /// next frame, as if they were read again, and returns where they are
+    /// recorded now. A cached view that rendered while it was laid out read
+    /// its elements' states before its prepaint range began, so reusing the
+    /// prepaint range alone would drop them.
+    pub(crate) fn reuse_element_states(&mut self, range: Range<usize>) -> Range<usize> {
+        let start = self.element_states_index();
+        self.next_frame.accessed_element_states.extend(
+            self.rendered_frame.accessed_element_states[range]
+                .iter()
+                .map(|(id, type_id)| (id.clone(), *type_id)),
+        );
+        start..self.element_states_index()
+    }
+
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
@@ -9923,5 +9943,110 @@ mod tests {
             assert_eq!(renders.get(), initial_renders);
             assert_eq!(paints.get(), initial_paints);
         }
+    }
+
+    /// Counts the frames it was laid out in, in a state it reads only while
+    /// it is laid out.
+    struct LayoutCount(Rc<Cell<usize>>);
+
+    impl IntoElement for LayoutCount {
+        type Element = Self;
+
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+
+    impl crate::Element for LayoutCount {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+
+        fn id(&self) -> Option<ElementId> {
+            Some("layout-count".into())
+        }
+
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+
+        fn request_layout(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
+            let count = window.with_element_state(id.unwrap(), |count: Option<usize>, _| {
+                let count = count.unwrap_or(0) + 1;
+                (count, count)
+            });
+            self.0.set(count);
+            (window.request_layout(Style::default(), None, cx), ())
+        }
+
+        fn prepaint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut Window,
+            _: &mut App,
+        ) {
+        }
+
+        fn paint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut (),
+            _: &mut Window,
+            _: &mut App,
+        ) {
+        }
+    }
+
+    struct LayoutCountView(Rc<Cell<usize>>);
+
+    impl Render for LayoutCountView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(10.0)).child(LayoutCount(self.0.clone()))
+        }
+    }
+
+    struct LayoutCountParent(Entity<LayoutCountView>);
+
+    impl Render for LayoutCountParent {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(40.0)).child(
+                self.0
+                    .clone()
+                    .cached(crate::StyleRefinement::default().size(px(10.0))),
+            )
+        }
+    }
+
+    #[test]
+    fn a_reused_cached_view_keeps_the_states_its_elements_read_while_laid_out() {
+        let count = Rc::new(Cell::new(0));
+        let mut app = TestApp::new();
+        let counted = count.clone();
+        let mut window =
+            app.open_window(move |_, cx| LayoutCountParent(cx.new(|_| LayoutCountView(counted))));
+        window.draw();
+        assert_eq!(count.get(), 1);
+        let child = window.update(|parent, _, _| parent.0.clone());
+        window.update(|_, _, cx| cx.notify());
+        window.draw();
+        assert_eq!(count.get(), 1, "the parent's frame reused the child");
+        app.update(|cx| child.update(cx, |_, cx| cx.notify()));
+        window.draw();
+        assert_eq!(
+            count.get(),
+            2,
+            "the child's next layout reads the state its reused frame kept"
+        );
     }
 }

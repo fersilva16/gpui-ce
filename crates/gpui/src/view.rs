@@ -338,6 +338,9 @@ impl<V: View> IntoElement for ViewElement<V> {
 }
 
 struct ViewElementState {
+    /// The element states the view's elements read while it was laid out,
+    /// before `prepaint_range` began.
+    layout_states: Range<usize>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     cache_key: ViewElementCacheKey,
@@ -350,6 +353,7 @@ pub struct ViewElementRequestLayoutState {
     element: Option<AnyElement>,
     detached_layout_id: Option<LayoutId>,
     accessed_entities: FxHashSet<EntityId>,
+    layout_states: Range<usize>,
 }
 
 #[derive(Default)]
@@ -413,6 +417,7 @@ impl<V: View> Element for ViewElement<V> {
                     !known || window.dirty_views.contains(&entity_id) || window.refreshing;
 
                 if should_probe {
+                    let layout_start = window.element_states_index();
                     let ((element, detached_layout_id), accessed_entities) = cx
                         .detect_accessed_entities(|cx| {
                             let mut element = render_view(self.view.take().unwrap(), window, cx);
@@ -420,6 +425,7 @@ impl<V: View> Element for ViewElement<V> {
 
                             (element, detached_layout_id)
                         });
+                    let layout_states = layout_start..window.element_states_index();
                     window.set_layout_logical_children(
                         layout_id,
                         std::slice::from_ref(&detached_layout_id),
@@ -431,6 +437,7 @@ impl<V: View> Element for ViewElement<V> {
                             element: Some(element),
                             detached_layout_id: Some(detached_layout_id),
                             accessed_entities,
+                            layout_states,
                         },
                     );
                 }
@@ -500,6 +507,8 @@ impl<V: View> Element for ViewElement<V> {
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                         {
+                            element_state.layout_states =
+                                window.reuse_element_states(element_state.layout_states.clone());
                             let prepaint_start = window.prepaint_index();
                             window.reuse_prepaint(element_state.prepaint_range.clone());
                             cx.entities
@@ -549,6 +558,7 @@ impl<V: View> Element for ViewElement<V> {
                             Some(element),
                             ViewElementState {
                                 accessed_entities,
+                                layout_states: mem::take(&mut request_layout.layout_states),
                                 prepaint_range: prepaint_start..prepaint_end,
                                 paint_range: PaintIndex::default()..PaintIndex::default(),
                                 cache_key,
